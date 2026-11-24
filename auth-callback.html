@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <meta name="referrer" content="no-referrer" />
+  <title>Haven — Cuenta</title>
+  <!--
+    Página a la que llevan los enlaces de los correos de Supabase (confirmar
+    cuenta y recuperar contraseña) cuando se pidieron desde la app nativa.
+    Se publica en GitHub Pages (scripts/publish-legal.ps1) y su URL debe estar
+    en Supabase → Authentication → URL Configuration → Redirect URLs.
+    Sin dependencias externas: lee el fragmento (#...) que añade Supabase y,
+    si es una recuperación, llama directamente a PUT /auth/v1/user.
+  -->
+  <style>
+    :root {
+      --bg: #121413; --card: #1c1f1d; --text: #eef1ee; --muted: #a3aaa5;
+      --accent: #6fbf94; --accent-text: #0f1a14; --border: #2c312e;
+      --ok: #6fbf94; --err: #f08a7a; --input: #151816;
+    }
+    :root[data-theme="light"] {
+      --bg: #f6f7f5; --card: #ffffff; --text: #1b1d1f; --muted: #6b6b6b;
+      --accent: #2f6f4f; --accent-text: #ffffff; --border: #e3e6e2;
+      --ok: #2f6f4f; --err: #b3412f; --input: #fbfcfb;
+    }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; margin: 0; padding: 16px;
+           background: var(--bg); color: var(--text); line-height: 1.55; min-height: 100vh; }
+    .top { max-width: 460px; margin: 0 auto 12px; display: flex; justify-content: flex-end; }
+    .theme { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 999px;
+             padding: 6px 14px; font-size: 14px; cursor: pointer; }
+    .wrap { max-width: 460px; margin: 0 auto; background: var(--card); border: 1px solid var(--border);
+            border-radius: 18px; padding: 28px 24px; }
+    .brand { font-weight: 700; color: var(--accent); letter-spacing: .02em; margin-bottom: 8px; }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    .status { font-weight: 600; }
+    .status.ok { color: var(--ok); } .status.err { color: var(--err); }
+    label { display: block; font-size: 14px; margin: 12px 0 4px; }
+    input { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid var(--border);
+            background: var(--input); color: var(--text); font-size: 16px; }
+    button.primary { width: 100%; margin-top: 18px; padding: 12px; border: 0; border-radius: 12px;
+                     background: var(--accent); color: var(--accent-text); font-size: 16px; font-weight: 600; cursor: pointer; }
+    button.primary:disabled { opacity: .6; cursor: default; }
+    [hidden] { display: none !important; }
+  </style>
+  <script>
+    // Tema antes de pintar para evitar parpadeo. Oscuro por defecto.
+    (function () {
+      var theme = "dark";
+      try { theme = localStorage.getItem("haven-auth-theme") || "dark"; } catch (e) {}
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+</head>
+<body>
+  <div class="top"><button class="theme" id="themeBtn" type="button"></button></div>
+  <main class="wrap">
+    <div class="brand">Haven</div>
+    <h1 id="title"></h1>
+    <p id="message"></p>
+    <form id="resetForm" hidden novalidate>
+      <label for="pw" id="pwLabel"></label>
+      <input id="pw" type="password" autocomplete="new-password" minlength="8" required />
+      <label for="pw2" id="pw2Label"></label>
+      <input id="pw2" type="password" autocomplete="new-password" minlength="8" required />
+      <button class="primary" id="submitBtn" type="submit"></button>
+    </form>
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+  </main>
+
+  <script>
+    (function () {
+      var SUPABASE_URL = "https://issxagrlwqubrzorahsn.supabase.co";
+      // Clave pública (anon): es la misma que va dentro de la app, no es secreta.
+      var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imlzc3hhZ3Jsd3F1YnJ6b3JhaHNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3MDg4NzgsImV4cCI6MjEwMDI4NDg3OH0.xqjPCWhFyGO5qINzH48umdTIxK7zOJY0jRyGknfD9Gs";
+
+      var I18N = {
+        es: {
+          toDark: "Modo oscuro", toLight: "Modo claro",
+          confirmedTitle: "¡Correo confirmado!",
+          confirmedMsg: "Tu cuenta de Haven ya está activa. Vuelve a la app e inicia sesión con tu correo y contraseña.",
+          recoveryTitle: "Nueva contraseña",
+          recoveryMsg: "Escribe tu nueva contraseña de Haven.",
+          pw: "Nueva contraseña", pw2: "Repite la contraseña", save: "Guardar contraseña", saving: "Guardando…",
+          tooShort: "La contraseña debe tener al menos 8 caracteres.",
+          mismatch: "Las contraseñas no coinciden.",
+          samePw: "La nueva contraseña debe ser distinta de la anterior.",
+          weakPw: "La contraseña es demasiado débil. Prueba con una más larga o variada.",
+          sessionExpired: "El enlace ha caducado. Pide otro desde la app (¿Has olvidado tu contraseña?).",
+          genericErr: "No se ha podido guardar. Inténtalo de nuevo en unos minutos.",
+          savedTitle: "Contraseña cambiada",
+          savedMsg: "Ya puedes volver a la app e iniciar sesión con tu nueva contraseña.",
+          errorTitle: "Enlace no válido",
+          expiredMsg: "Este enlace ha caducado o ya se ha usado. Si ya habías confirmado tu cuenta, inicia sesión en la app; si no, pide un correo nuevo desde la app.",
+          errorMsg: "No se ha podido completar la acción con este enlace. Vuelve a la app y pide un correo nuevo.",
+          noneTitle: "Haven",
+          noneMsg: "Esta página se abre desde los enlaces de los correos de Haven. Vuelve a la app para continuar."
+        },
+        ca: {
+          toDark: "Mode fosc", toLight: "Mode clar",
+          confirmedTitle: "Correu confirmat!",
+          confirmedMsg: "El teu compte de Haven ja està actiu. Torna a l'app i inicia sessió amb el teu correu i contrasenya.",
+          recoveryTitle: "Nova contrasenya",
+          recoveryMsg: "Escriu la teva nova contrasenya de Haven.",
+          pw: "Nova contrasenya", pw2: "Repeteix la contrasenya", save: "Desar contrasenya", saving: "Desant…",
+          tooShort: "La contrasenya ha de tenir almenys 8 caràcters.",
+          mismatch: "Les contrasenyes no coincideixen.",
+          samePw: "La nova contrasenya ha de ser diferent de l'anterior.",
+          weakPw: "La contrasenya és massa feble. Prova'n una de més llarga o variada.",
+          sessionExpired: "L'enllaç ha caducat. Demana'n un altre des de l'app (Has oblidat la contrasenya?).",
+          genericErr: "No s'ha pogut desar. Torna-ho a provar d'aquí a uns minuts.",
+          savedTitle: "Contrasenya canviada",
+          savedMsg: "Ja pots tornar a l'app i iniciar sessió amb la teva nova contrasenya.",
+          errorTitle: "Enllaç no vàlid",
+          expiredMsg: "Aquest enllaç ha caducat o ja s'ha fet servir. Si ja havies confirmat el compte, inicia sessió a l'app; si no, demana un correu nou des de l'app.",
+          errorMsg: "No s'ha pogut completar l'acció amb aquest enllaç. Torna a l'app i demana un correu nou.",
+          noneTitle: "Haven",
+          noneMsg: "Aquesta pàgina s'obre des dels enllaços dels correus de Haven. Torna a l'app per continuar."
+        },
+        en: {
+          toDark: "Dark mode", toLight: "Light mode",
+          confirmedTitle: "Email confirmed!",
+          confirmedMsg: "Your Haven account is now active. Go back to the app and sign in with your email and password.",
+          recoveryTitle: "New password",
+          recoveryMsg: "Enter your new Haven password.",
+          pw: "New password", pw2: "Repeat password", save: "Save password", saving: "Saving…",
+          tooShort: "Password must be at least 8 characters.",
+          mismatch: "Passwords don't match.",
+          samePw: "The new password must be different from the old one.",
+          weakPw: "That password is too weak. Try a longer or more varied one.",
+          sessionExpired: "This link has expired. Request a new one from the app (Forgot your password?).",
+          genericErr: "Couldn't save. Please try again in a few minutes.",
+          savedTitle: "Password changed",
+          savedMsg: "You can now go back to the app and sign in with your new password.",
+          errorTitle: "Invalid link",
+          expiredMsg: "This link has expired or was already used. If you already confirmed your account, sign in from the app; otherwise request a new email from the app.",
+          errorMsg: "This link couldn't be completed. Go back to the app and request a new email.",
+          noneTitle: "Haven",
+          noneMsg: "This page opens from the links in Haven emails. Go back to the app to continue."
+        }
+      };
+
+      var langs = (navigator.languages || [navigator.language || "es"]).map(function (l) { return String(l).slice(0, 2).toLowerCase(); });
+      var lang = langs.filter(function (l) { return I18N[l]; })[0] || "es";
+      var t = I18N[lang];
+      document.documentElement.lang = lang;
+
+      var $ = function (id) { return document.getElementById(id); };
+
+      // ---- Tema (oscuro por defecto, recordado en localStorage) ----
+      function paintThemeBtn() {
+        var dark = document.documentElement.getAttribute("data-theme") !== "light";
+        $("themeBtn").textContent = dark ? "☀ " + t.toLight : "☾ " + t.toDark;
+      }
+      $("themeBtn").addEventListener("click", function () {
+        var next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", next);
+        try { localStorage.setItem("haven-auth-theme", next); } catch (e) {}
+        paintThemeBtn();
+      });
+      paintThemeBtn();
+
+      // ---- Parámetros que añade Supabase (fragmento y, por si acaso, query) ----
+      var params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      new URLSearchParams(window.location.search).forEach(function (v, k) { if (!params.has(k)) params.set(k, v); });
+      // Quita los tokens de la barra de direcciones/historial en cuanto se leen.
+      if (window.location.hash || window.location.search) {
+        try { history.replaceState(null, "", window.location.pathname); } catch (e) {}
+      }
+
+      function show(title, message, statusText, statusKind) {
+        $("title").textContent = title;
+        $("message").textContent = message || "";
+        $("status").textContent = statusText || "";
+        $("status").className = "status" + (statusKind ? " " + statusKind : "");
+        document.title = "Haven — " + title;
+      }
+
+      var error = params.get("error") || params.get("error_code");
+      var type = params.get("type");
+      var accessToken = params.get("access_token");
+
+      if (error) {
+        var expired = /expired|otp_expired|invalid/i.test((params.get("error_code") || "") + " " + (params.get("error_description") || ""));
+        show(t.errorTitle, expired ? t.expiredMsg : t.errorMsg, "", "err");
+        return;
+      }
+
+      if (type === "recovery" && accessToken) {
+        show(t.recoveryTitle, t.recoveryMsg);
+        $("pwLabel").textContent = t.pw;
+        $("pw2Label").textContent = t.pw2;
+        $("submitBtn").textContent = t.save;
+        $("resetForm").hidden = false;
+        $("pw").focus();
+
+        $("resetForm").addEventListener("submit", function (e) {
+          e.preventDefault();
+          var pw = $("pw").value, pw2 = $("pw2").value;
+          if (pw.length < 8) { show(t.recoveryTitle, t.recoveryMsg, t.tooShort, "err"); return; }
+          if (pw !== pw2) { show(t.recoveryTitle, t.recoveryMsg, t.mismatch, "err"); return; }
+
+          $("submitBtn").disabled = true;
+          $("submitBtn").textContent = t.saving;
+          fetch(SUPABASE_URL + "/auth/v1/user", {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+              "apikey": SUPABASE_ANON_KEY,
+              "Authorization": "Bearer " + accessToken
+            },
+            body: JSON.stringify({ password: pw })
+          }).then(function (res) {
+            if (res.ok) {
+              $("resetForm").hidden = true;
+              accessToken = null;
+              show(t.savedTitle, t.savedMsg, "", "ok");
+              return;
+            }
+            return res.json().catch(function () { return {}; }).then(function (body) {
+              var code = body.error_code || body.code || "";
+              var msg = t.genericErr;
+              if (res.status === 401 || res.status === 403) msg = t.sessionExpired;
+              else if (code === "same_password") msg = t.samePw;
+              else if (code === "weak_password") msg = t.weakPw;
+              show(t.recoveryTitle, t.recoveryMsg, msg, "err");
+            });
+          }).catch(function () {
+            show(t.recoveryTitle, t.recoveryMsg, t.genericErr, "err");
+          }).then(function () {
+            $("submitBtn").disabled = false;
+            $("submitBtn").textContent = t.save;
+          });
+        });
+        return;
+      }
+
+      // signup / email_change / invite / magiclink, o flujo PKCE (?code=):
+      // Supabase ya ha confirmado el correo en su servidor ANTES de redirigir
+      // aquí, así que solo queda avisar al usuario.
+      if (type || accessToken || params.get("code")) {
+        show(t.confirmedTitle, t.confirmedMsg, "", "ok");
+        return;
+      }
+
+      show(t.noneTitle, t.noneMsg);
+    })();
+  </script>
+</body>
+</html>
